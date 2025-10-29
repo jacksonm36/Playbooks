@@ -1,0 +1,77 @@
+---
+- name: Update and upgrade system
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Check if running on supported OS
+      fail:
+        msg: "Unsupported operating system {{ ansible_facts['os_family'] }}"
+      when: ansible_facts['os_family'] not in ["Debian", "RedHat", "Suse", "Archlinux"]
+
+    - name: Create update script
+      copy:
+        content: |
+          #!/bin/bash
+          set -e
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          NC='\033[0m'
+          log() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"; }
+          error() { echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" >&2; }
+          
+          if [[ $EUID -ne 0 ]]; then
+            error "This script requires root privileges"
+            exit 1
+          fi
+          
+          if command -v apt-get >/dev/null 2>&1; then
+            log "Updating APT system"
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+            DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -qq
+            apt-get autoremove -y -qq
+            apt-get autoclean -y -qq
+          elif command -v dnf >/dev/null 2>&1; then
+            log "Updating DNF system"
+            dnf update -y -q
+          elif command -v yum >/dev/null 2>&1; then
+            log "Updating YUM system"
+            yum update -y -q
+          elif command -v zypper >/dev/null 2>&1; then
+            log "Updating Zypper system"
+            zypper refresh -q
+            zypper update -y -q
+          elif command -v pacman >/dev/null 2>&1; then
+            log "Updating Pacman system"
+            pacman -Syu --noconfirm --noprogressbar
+          else
+            error "Unsupported package manager"
+            exit 1
+          fi
+          
+          log "System update completed successfully!"
+          echo "=========================================="
+          echo "SUCCESS: System update completed"
+          echo "Timestamp: $(date)"
+          echo "=========================================="
+        dest: /tmp/update_system.sh
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Execute system update
+      command: /tmp/update_system.sh
+      register: update_result
+      changed_when: update_result.rc == 0
+
+    - name: Show update result
+      debug:
+        msg: "{{ update_result.stdout }}"
+
+    - name: Clean up temporary script
+      file:
+        path: /tmp/update_system.sh
+        state: absent
+      when: update_result.rc == 0
