@@ -6,13 +6,19 @@
 echo "=== Starting system update ==="
 
 # Update package list
-apt update
+if ! apt-get update; then
+    echo "❌ apt-get update failed"
+    exit 1
+fi
 
 # Upgrade packages
-apt upgrade -y
+if ! apt-get upgrade -y; then
+    echo "❌ apt-get upgrade failed"
+    exit 1
+fi
 
 # Clean up unused packages
-apt autoremove -y
-apt autoclean -y
+apt-get autoremove -y
+apt-get autoclean -y
 
-echo "=== Update & upgrade completed successfully ==="
+echo "✅ Update & upgrade completed successfully"
