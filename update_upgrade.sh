@@ -1,31 +1,20 @@
 #!/bin/bash
 
-# Update & upgrade script (no reboot)
-# Author: Jenő's automation assistant
+# Ansible-compatible update & upgrade script (no reboot)
+# Safe to run from Semaphore
 
-LOGFILE="/var/log/update_upgrade.log"
+set -e
 
-echo "[$(date)] Starting system update..." | tee -a "$LOGFILE"
+echo "=== Starting system update ==="
 
 # Update package list
-if apt update >> "$LOGFILE" 2>&1; then
-    echo "[$(date)] Package list updated successfully." | tee -a "$LOGFILE"
-else
-    echo "[$(date)] ERROR: Failed to update package list." | tee -a "$LOGFILE"
-    exit 1
-fi
+apt update -y
 
 # Upgrade packages
-if apt upgrade -y >> "$LOGFILE" 2>&1; then
-    echo "[$(date)] Packages upgraded successfully." | tee -a "$LOGFILE"
-else
-    echo "[$(date)] ERROR: Failed to upgrade packages." | tee -a "$LOGFILE"
-    exit 1
-fi
+apt upgrade -y
 
-# Autoremove and autoclean
-apt autoremove -y >> "$LOGFILE" 2>&1
-apt autoclean -y >> "$LOGFILE" 2>&1
-echo "[$(date)] Cleanup completed." | tee -a "$LOGFILE"
+# Clean up unused packages
+apt autoremove -y
+apt autoclean -y
 
-echo "[$(date)] Update & upgrade process completed. No reboot triggered." | tee -a "$LOGFILE"
+echo "=== Update & upgrade completed successfully ==="
