@@ -3,12 +3,10 @@
 # Ansible-compatible update & upgrade script (no reboot)
 # Safe to run from Semaphore
 
-set -e
-
 echo "=== Starting system update ==="
 
 # Update package list
-apt update -y
+apt update
 
 # Upgrade packages
 apt upgrade -y
