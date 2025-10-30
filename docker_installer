@@ -1,0 +1,125 @@
+---
+- name: Install Docker with buildx and compose plugin (multi-OS)
+  hosts: docker_hosts
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Install Docker on Ubuntu
+      block:
+        - name: Install prerequisites
+          apt:
+            name:
+              - ca-certificates
+              - curl
+            state: present
+            update_cache: true
+
+        - name: Create keyring directory
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: '0755'
+
+        - name: Add Docker GPG key
+          get_url:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: '0644'
+
+        - name: Add Docker APT repository
+          shell: |
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo ${UBUNTU_CODENAME:-$VERSION_CODENAME}) stable" > /etc/apt/sources.list.d/docker.list
+          args:
+            executable: /bin/bash
+
+        - name: Install Docker Engine and plugins
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+            update_cache: true
+      when: ansible_facts['distribution'] == "Ubuntu"
+
+    - name: Install Docker on Debian
+      block:
+        - name: Install prerequisites
+          apt:
+            name:
+              - ca-certificates
+              - curl
+            state: present
+            update_cache: true
+
+        - name: Create keyring directory
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: '0755'
+
+        - name: Add Docker GPG key
+          get_url:
+            url: https://download.docker.com/linux/debian/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: '0644'
+
+        - name: Add Docker APT repository
+          shell: |
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+          args:
+            executable: /bin/bash
+
+        - name: Install Docker Engine and plugins
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+            update_cache: true
+      when: ansible_facts['distribution'] == "Debian"
+
+    - name: Install Docker on RHEL/CentOS
+      block:
+        - name: Install dnf-plugins-core
+          dnf:
+            name: dnf-plugins-core
+            state: present
+
+        - name: Add Docker repo
+          command: dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+
+        - name: Install Docker Engine and plugins
+          dnf:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Validate Docker installation
+      command: docker info
+      register: docker_info
+      changed_when: false
+
+    - name: Show Docker info
+      debug:
+        msg: "{{ docker_info.stdout }}"
+
+    - name: Validate Docker Compose plugin
+      command: docker compose version
+      register: compose_version
+      changed_when: false
+
+    - name: Show Docker Compose version
+      debug:
+        msg: "{{ compose_version.stdout }}"
