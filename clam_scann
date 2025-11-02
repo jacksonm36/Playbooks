@@ -102,27 +102,30 @@
     - name: Combine scan path with result
       set_fact:
         clamav_results: "{{ clamav_results | default([]) + [ {
-          'path': item.item,
-          'rc': item.rc | default(-1),
-          'stdout': item.stdout | default(''),
-          'stderr': item.stderr | default(''),
-          'timed_out': (item.rc | default(-1)) == 124,
-          'killed': (item.rc | default(-1)) == 137,
-          'infected': (item.rc | default(-1)) == 1,
-          'failed': (item.rc | default(-1)) > 1 and (item.rc | default(-1)) not in [124, 137],
+          'path': path_item,
+          'rc': result_item.rc | default(-1),
+          'stdout': result_item.stdout | default(''),
+          'stderr': result_item.stderr | default(''),
+          'timed_out': (result_item.rc | default(-1)) == 124,
+          'killed': (result_item.rc | default(-1)) == 137,
+          'infected': (result_item.rc | default(-1)) == 1,
+          'failed': (result_item.rc | default(-1)) > 1 and (result_item.rc | default(-1)) not in [124, 137],
           'summary': (
-            (item.stdout_lines | select('search', 'Infected files:') | list | join(''))
-            if item.stdout_lines is defined and item.stdout_lines | length > 0
+            (result_item.stdout_lines | select('search', 'Infected files:') | list | join(''))
+            if result_item.stdout_lines is defined and result_item.stdout_lines | length > 0
             else (
-              (item.stdout | default('') | regex_search('Infected files:.*', multiline=True))
-              if item.stdout is defined
+              (result_item.stdout | default('') | regex_search('Infected files:.*', multiline=True))
+              if result_item.stdout is defined
               else ''
             )
           )
         } ] }}"
-      loop: "{{ clamscan_raw.results | default([]) }}"
+      loop: "{{ scan_paths | zip(clamscan_raw.results | default([])) | list }}"
       loop_control:
-        loop_var: item
+        loop_var: path_result_pair
+      vars:
+        path_item: "{{ path_result_pair[0] }}"
+        result_item: "{{ path_result_pair[1] }}"
       when: clamscan_raw is defined and clamscan_raw.results is defined
 
     - name: Display scan result per path
