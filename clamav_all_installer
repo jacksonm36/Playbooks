@@ -6,10 +6,26 @@
 
   tasks:
 
-    - name: Ensure EPEL is enabled on RedHat/CentOS/Fedora
+    # For RHEL/CentOS 8/9, enable CRB or PowerTools (for dependencies) and EPEL
+    - name: Enable CodeReady Builder (CRB) repo on RHEL 9
+      ansible.builtin.command: dnf config-manager --set-enabled crb
+      register: enable_crb
+      changed_when: enable_crb.rc == 0
+      failed_when: false
+      when:
+        - ansible_distribution_major_version is defined
+        - ansible_distribution_major_version | int == 9
+        - ansible_os_family == "RedHat"
+
+    - name: Enable EPEL repo on RHEL/CentOS/Fedora
       ansible.builtin.yum:
         name: epel-release
         state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Refresh yum/dnf cache after enabling repos (RedHat)
+      ansible.builtin.yum:
+        update_cache: yes
       when: ansible_os_family == "RedHat"
 
     - name: Install ClamAV on Debian/Ubuntu
@@ -27,6 +43,7 @@
           - clamav
           - clamav-update
         state: present
+      register: rhel_clamav
       ignore_errors: true
       when: ansible_os_family == "RedHat"
 
@@ -79,7 +96,11 @@
 
     - name: Print install note if ClamAV not available on RedHat
       ansible.builtin.debug:
-        msg: "ClamAV package not found on this RedHat host. Please ensure EPEL is enabled and metadata is up-to-date."
+        msg: |
+          ClamAV package not found on this RedHat host. 
+          On RHEL 9, ensure CRB is enabled: dnf config-manager --set-enabled crb
+          On RHEL 8, enable PowerTools: dnf config-manager --set-enabled powertools
+          Also ensure EPEL is enabled. See https://docs.fedoraproject.org/en-US/epel/
       when:
         - ansible_os_family == "RedHat"
-        - (ansible_facts.packages is not defined or 'clamav' not in ansible_facts.packages)
+        - (rhel_clamav is defined and rhel_clamav is failed)
