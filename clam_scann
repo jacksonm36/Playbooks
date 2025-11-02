@@ -45,10 +45,10 @@
       failed_when: false
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
-    - name: Gather scan results summary
+    - name: Combine scan path with result
       set_fact:
         clamav_results: "{{ clamav_results | default([]) + [ {
-          'path': scan_path,
+          'path': item.item,
           'rc': item.rc,
           'timed_out': item.rc == 124,
           'killed': item.rc == 137,
