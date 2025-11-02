@@ -11,11 +11,24 @@
       - /var/tmp
       - /usr/local/bin
       - /home
+    max_filesize: "100M"
+    max_scansize: "200M"
 
   tasks:
-    - name: Check if ClamAV is installed
+    - name: Verify supported operating system
+      fail:
+        msg: "Unsupported OS family '{{ ansible_os_family }}'. This playbook supports Debian, RedHat, and Archlinux."
+      when: ansible_os_family not in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Install ClamAV package
       package:
         name: "{{ 'clamav' if ansible_os_family == 'Debian' else 'clamav' if ansible_os_family == 'RedHat' else 'clamav' }}"
+        state: present
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Install ClamAV freshclam service
+      package:
+        name: "{{ 'clamav-freshclam' if ansible_os_family == 'Debian' else 'clamav' if ansible_os_family == 'RedHat' else 'clamav' }}"
         state: present
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
@@ -35,43 +48,89 @@
          'Database updated' in freshclam_output.stdout"
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
-    - name: Show freshclam output
+    - name: Show freshclam update status
       debug:
-        var: freshclam_output.stdout
-      when: freshclam_output is defined
+        msg: "FreshClam update completed: {{ freshclam_output.stdout_lines | last }}"
+      when: freshclam_output is defined and freshclam_output.stdout_lines | length > 0
 
-    - name: Run ClamAV scan on each path
-      command: clamscan -r --max-filesize=100M --max-scansize=200M "{{ scan_path }}"
+    - name: Run ClamAV scan on specified paths
+      command: >
+        clamscan -r 
+        --max-filesize={{ max_filesize }}
+        --max-scansize={{ max_scansize }}
+        "{{ item }}"
       register: scan_results
-      failed_when: scan_results.rc != 0 and scan_results.rc != 1
+      failed_when: scan_results.rc > 1  # Only fail on errors (not on found infections)
       loop: "{{ scan_paths }}"
-      loop_control:
-        loop_var: scan_path
-        label: "{{ scan_path }}"
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-      ignore_errors: true
+      ignore_errors: true  # Continue even if individual scans fail
 
-    - name: Process scan results
+    - name: Display individual scan results
       debug:
         msg: |
-          Scan completed for {{ item.item }}.
-          Exit code: {{ item.rc }}
-          {% if item.rc == 0 %}
-          Status: No threats found
-          {% elif item.rc == 1 %}
-          Status: Threats detected!
-          Infected files found
-          {% else %}
-          Status: Scan failed with error
-          {% endif %}
-          {% if item.stdout %}
-          Output: {{ item.stdout | trim }}
+          Path: {{ scan_paths[ansible_loop.index0] }}
+          Exit Code: {{ item.rc }}
+          Status: {% if item.rc == 0 %}CLEAN - No threats found{% elif item.rc == 1 %}INFECTED - Threats detected!{% else %}ERROR - Scan failed (code: {{ item.rc }}){% endif %}
+          {% if item.stdout_lines %}
+          Summary: {{ item.stdout_lines | select('match', '.*Scanned.*') | list | last | default('No summary available') }}
           {% endif %}
       loop: "{{ scan_results.results }}"
       loop_control:
-        label: "{{ item.item }}"
+        label: "{{ scan_paths[ansible_loop.index0] }}"
 
-    - name: Start freshclam daemon if it was stopped
+    - name: Generate comprehensive scan summary
+      debug:
+        msg: |
+          === CLAMAV SCAN SUMMARY ===
+          Total paths scanned: {{ scan_results.results | length }}
+          Clean paths: {{ (scan_results.results | selectattr('rc', 'equalto', 0) | list | length) }}
+          Infected paths: {{ (scan_results.results | selectattr('rc', 'equalto', 1) | list | length) }}
+          Failed scans: {{ (scan_results.results | selectattr('rc', 'gt', 1) | list | length) }}
+          {% set infected_paths = [] %}
+          {% for result in scan_results.results %}
+          {% if result.rc == 1 %}
+          {% set _ = infected_paths.append(scan_paths[loop.index0]) %}
+          {% endif %}
+          {% endfor %}
+          {% if infected_paths %}
+          
+          INFECTED PATHS FOUND:
+          {% for path in infected_paths %}
+            - {{ path }}
+          {% endfor %}
+          {% endif %}
+          {% set failed_paths = [] %}
+          {% for result in scan_results.results %}
+          {% if result.rc > 1 %}
+          {% set _ = failed_paths.append(scan_paths[loop.index0]) %}
+          {% endif %}
+          {% endfor %}
+          {% if failed_paths %}
+          
+          FAILED SCANS:
+          {% for path in failed_paths %}
+            - {{ path }} (Error code: {{ scan_results.results[loop.index0].rc }})
+          {% endfor %}
+          {% endif %}
+
+    - name: Alert if infections were detected
+      fail:
+        msg: "VIRUS SCAN ALERT: Infected files detected in {{ (scan_results.results | selectattr('rc', 'equalto', 1) | list | length) }} path(s). Check scan results for details."
+      when: (scan_results.results | selectattr('rc', 'equalto', 1) | list | length) > 0
+
+    - name: Alert if scans failed
+      warn:
+        msg: "{{ (scan_results.results | selectattr('rc', 'gt', 1) | list | length) }} scan(s) failed due to errors. Check individual scan results."
+      when: (scan_results.results | selectattr('rc', 'gt', 1) | list | length) > 0
+
+    - name: Start freshclam daemon
+      service:
+        name: "{{ 'clamav-freshclam' if ansible_os_family in ['Debian', 'Archlinux'] else 'clam-freshclam' }}"
+        state: started
+        enabled: yes
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Confirm freshclam service is running
       service:
         name: "{{ 'clamav-freshclam' if ansible_os_family in ['Debian', 'Archlinux'] else 'clam-freshclam' }}"
         state: started
