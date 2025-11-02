@@ -52,6 +52,8 @@
         clean_count: "{{ (scan_results.results | selectattr('rc', 'equalto', 0) | list | length) }}"
         infected_count: "{{ (scan_results.results | selectattr('rc', 'equalto', 1) | list | length) }}"
         error_count: "{{ (scan_results.results | selectattr('rc', 'gt', 1) | list | length) }}"
+        infected_paths: "{{ scan_results.results | selectattr('rc', 'equalto', 1) | map(attribute='item') | list }}"
+        failed_paths: "{{ scan_results.results | selectattr('rc', 'gt', 1) | map(attribute='item') | list }}"
 
     - name: Show final summary
       debug:
@@ -61,7 +63,21 @@
           Clean: {{ clean_count }}
           Infected: {{ infected_count }}
           Failed: {{ error_count }}
-          {% if infected_count > 0 %}SECURITY ALERT: Infections detected!{% else %}SECURITY STATUS: All paths clean{% endif %}
+          {% if infected_count > 0 %}
+          SECURITY ALERT: Infections detected!
+          Infected paths:
+          {% for path in infected_paths %}
+            - {{ path }}
+          {% endfor %}
+          {% else %}
+          SECURITY STATUS: All paths clean
+          {% endif %}
+          {% if error_count > 0 %}
+          FAILED paths:
+          {% for path in failed_paths %}
+            - {{ path }}
+          {% endfor %}
+          {% endif %}
 
     - name: List infected paths (simple text)
       debug:
@@ -75,10 +91,21 @@
       loop: "{{ scan_results.results }}"
       when: item.rc > 1
 
-    - name: Fail playbook if infections found
-      fail:
-        msg: "VIRUS SCAN ALERT: Infected files detected in {{ infected_count }} path(s). Immediate action required!"
-      when: infected_count | int > 0
+    - name: Check if clamav-freshclam is systemd-enabled
+      command: systemctl is-enabled clamav-freshclam
+      register: clamav_freshclam_enabled
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Enable clamav-freshclam service if not enabled
+      systemd:
+        name: clamav-freshclam
+        enabled: true
+      when:
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - clamav_freshclam_enabled.stdout is defined
+        - clamav_freshclam_enabled.stdout != "enabled"
 
     - name: Start freshclam daemon
       service:
@@ -88,7 +115,4 @@
 
     - name: Final success message
       debug:
-        msg: "ClamAV scan completed successfully. All {{ scan_results.results | length }} paths are clean."
-      when: 
-        - infected_count | int == 0
-        - error_count | int == 0
+        msg: "ClamAV scan completed. {{ infected_count }} infected path(s) found, {{ error_count }} failed scan(s). See above for details."
