@@ -6,8 +6,14 @@
 
   tasks:
 
+    - name: Ensure EPEL is enabled on RedHat/CentOS/Fedora
+      ansible.builtin.yum:
+        name: epel-release
+        state: present
+      when: ansible_os_family == "RedHat"
+
     - name: Install ClamAV on Debian/Ubuntu
-      apt:
+      ansible.builtin.apt:
         name:
           - clamav
           - clamav-freshclam
@@ -16,37 +22,40 @@
       when: ansible_os_family == "Debian"
 
     - name: Install ClamAV on RHEL/CentOS/Fedora
-      yum:
+      ansible.builtin.yum:
         name:
           - clamav
           - clamav-update
         state: present
+      ignore_errors: true
       when: ansible_os_family == "RedHat"
 
     - name: Install ClamAV on Arch-based systems
-      pacman:
+      ansible.builtin.pacman:
         name: clamav
         state: present
         update_cache: yes
       when: ansible_os_family == "Archlinux"
 
     - name: Stop freshclam daemon (if running)
-      service:
+      ansible.builtin.service:
         name: clamav-freshclam
         state: stopped
       ignore_errors: true
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
     - name: Run freshclam to download virus signature database
-      command: freshclam
+      ansible.builtin.command: freshclam
       register: freshclam_output
       changed_when: "'bytecode.cvd' in freshclam_output.stdout or 'main.cvd' in freshclam_output.stdout"
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
     - name: Show freshclam output
-      debug:
+      ansible.builtin.debug:
         var: freshclam_output.stdout
-      when: freshclam_output is defined
+      when:
+        - freshclam_output is defined
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
     - name: Install ClamAV on Windows Server (via Chocolatey)
       win_chocolatey:
@@ -62,6 +71,15 @@
       when: ansible_os_family == "Windows"
 
     - name: Show Windows freshclam output
-      debug:
+      ansible.builtin.debug:
         var: win_freshclam.stdout
-      when: win_freshclam is defined
+      when:
+        - ansible_os_family == "Windows"
+        - win_freshclam is defined
+
+    - name: Print install note if ClamAV not available on RedHat
+      ansible.builtin.debug:
+        msg: "ClamAV package not found on this RedHat host. Please ensure EPEL is enabled and metadata is up-to-date."
+      when:
+        - ansible_os_family == "RedHat"
+        - (ansible_facts.packages is not defined or 'clamav' not in ansible_facts.packages)
