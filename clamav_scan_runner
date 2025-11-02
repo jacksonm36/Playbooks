@@ -1,0 +1,67 @@
+---
+- name: Update ClamAV DB and scan common paths
+  hosts: docker_hosts
+  become: true
+  gather_facts: yes
+
+  vars:
+    scan_paths:
+      - /opt
+      - /etc
+      - /var/tmp
+      - /usr/local/bin
+      - /home
+
+  tasks:
+
+    - name: Stop freshclam daemon (if running)
+      service:
+        name: clamav-freshclam
+        state: stopped
+      ignore_errors: true
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Run freshclam to update virus database
+      command: freshclam
+      register: freshclam_output
+      changed_when: "'updated' in freshclam_output.stdout or 'bytecode.cvd' in freshclam_output.stdout"
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Show freshclam output
+      debug:
+        var: freshclam_output.stdout
+      when: freshclam_output is defined
+
+    - name: Run ClamAV scan on common paths
+      command: clamscan -r {{ item }}
+      register: scan_result
+      failed_when: scan_result.rc != 0 and scan_result.rc != 1
+      loop: "{{ scan_paths }}"
+      loop_control:
+        label: "{{ item }}"
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Report scan result per path
+      debug:
+        msg: |
+          ✅ Scan completed for {{ item }}.
+          {{ scan_result.stdout }}
+      loop: "{{ scan_paths }}"
+      loop_control:
+        label: "{{ item }}"
+      when: scan_result is defined
+
+    - name: Alert if threats were found
+      debug:
+        msg: "❌ Threats detected in one or more scanned paths!"
+      when: scan_result.stdout is defined and "'Infected files: 0'" not in scan_result.stdout
+
+    - name: Confirm system is clean
+      debug:
+        msg: "✅ No threats found in scanned paths."
+      when: scan_result.stdout is defined and "'Infected files: 0'" in scan_result.stdout
+
+    - name: Report if scan failed
+      debug:
+        msg: "⚠️ ClamAV scan failed to complete properly."
+      when: scan_result.rc != 0 and scan_result.rc != 1
