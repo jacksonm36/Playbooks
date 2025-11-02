@@ -39,25 +39,13 @@
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
       ignore_errors: true
 
-    - name: Display scan results with path names
+    - name: Display scan results with path names (simple text)
       debug:
         msg: |
-          === Scan Result for {{ scan_paths[loop.index0] }} ===
-          Exit Code: {{ item.rc }}
-          {% if item.rc == 0 %}
-          Status: CLEAN - No threats found
-          {% elif item.rc == 1 %}
-          Status: INFECTED - Threats detected!
-          {% else %}
-          Status: ERROR - Scan failed (code: {{ item.rc }})
-          {% endif %}
-          {% if item.stdout %}
-          Summary: {{ (item.stdout_lines[-1] if (item.stdout_lines is defined and item.stdout_lines|length > 0) else (item.stdout | trim)) }}
-          {% endif %}
+          Path: {{ item.item }}
+          Result: {% if item.rc == 0 %}CLEAN{% elif item.rc == 1 %}INFECTED{% else %}ERROR{% endif %}
+          {{ (item.stdout_lines[-1] if (item.stdout_lines is defined and item.stdout_lines|length > 0) else (item.stdout | trim)) if item.stdout is defined }}
       loop: "{{ scan_results.results }}"
-      loop_control:
-        label: "{{ scan_paths[loop.index0] }}"
-        index_var: loop_index
 
     - name: Generate scan summary
       set_fact:
@@ -70,26 +58,22 @@
         msg: |
           === FINAL SCAN SUMMARY ===
           Total paths scanned: {{ scan_results.results | length }}
-          Clean paths: {{ clean_count }}
-          Infected paths: {{ infected_count }}
-          Failed scans: {{ error_count }}
-          {% if infected_count > 0 %}
-          SECURITY ALERT: Infections detected!
-          {% else %}
-          SECURITY STATUS: All paths clean
-          {% endif %}
+          Clean: {{ clean_count }}
+          Infected: {{ infected_count }}
+          Failed: {{ error_count }}
+          {% if infected_count > 0 %}SECURITY ALERT: Infections detected!{% else %}SECURITY STATUS: All paths clean{% endif %}
 
-    - name: List infected paths
+    - name: List infected paths (simple text)
       debug:
-        msg: "INFECTED: {{ scan_paths[item.0] }}"
-      with_indexed_items: "{{ scan_results.results }}"
-      when: item.1.rc == 1
+        msg: "INFECTED: {{ item.item }}"
+      loop: "{{ scan_results.results }}"
+      when: item.rc == 1
 
-    - name: List failed scans
+    - name: List failed scans (simple text)
       debug:
-        msg: "FAILED: {{ scan_paths[item.0] }} (Error code: {{ item.1.rc }})"
-      with_indexed_items: "{{ scan_results.results }}"
-      when: item.1.rc > 1
+        msg: "FAILED: {{ item.item }} (Error code: {{ item.rc }})"
+      loop: "{{ scan_results.results }}"
+      when: item.rc > 1
 
     - name: Fail playbook if infections found
       fail:
