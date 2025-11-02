@@ -1,6 +1,6 @@
 ---
 - name: Update ClamAV and scan system paths (fail-safe with timeout reporting)
-  hosts: homenet
+  hosts: all
   become: true
   gather_facts: yes
 
