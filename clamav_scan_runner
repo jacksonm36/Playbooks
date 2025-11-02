@@ -55,6 +55,24 @@
         infected_paths: "{{ scan_results.results | selectattr('rc', 'equalto', 1) | map(attribute='item') | list }}"
         failed_paths: "{{ scan_results.results | selectattr('rc', 'gt', 1) | map(attribute='item') | list }}"
 
+    - name: Show infected paths if any were found
+      debug:
+        msg: |
+          WARNING: The following paths were found INFECTED by ClamAV at {{ ansible_date_time.iso8601 }}:
+          {% for path in infected_paths %}
+            - {{ path }}
+          {% endfor %}
+      when: infected_count | int > 0
+
+    - name: Show failed scan paths if any
+      debug:
+        msg: |
+          ERROR: The following paths FAILED to scan at {{ ansible_date_time.iso8601 }}:
+          {% for path in failed_paths %}
+            - {{ path }}
+          {% endfor %}
+      when: error_count | int > 0
+
     - name: Show final summary
       debug:
         msg: |
@@ -64,32 +82,13 @@
           Infected: {{ infected_count }}
           Failed: {{ error_count }}
           {% if infected_count > 0 %}
-          SECURITY ALERT: Infections detected!
-          Infected paths:
-          {% for path in infected_paths %}
-            - {{ path }}
-          {% endfor %}
+          See above for infected paths!
           {% else %}
           SECURITY STATUS: All paths clean
           {% endif %}
           {% if error_count > 0 %}
-          FAILED paths:
-          {% for path in failed_paths %}
-            - {{ path }}
-          {% endfor %}
+          See above for failed paths!
           {% endif %}
-
-    - name: List infected paths (simple text)
-      debug:
-        msg: "INFECTED: {{ item.item }}"
-      loop: "{{ scan_results.results }}"
-      when: item.rc == 1
-
-    - name: List failed scans (simple text)
-      debug:
-        msg: "FAILED: {{ item.item }} (Error code: {{ item.rc }})"
-      loop: "{{ scan_results.results }}"
-      when: item.rc > 1
 
     - name: Check if clamav-freshclam is systemd-enabled
       command: systemctl is-enabled clamav-freshclam
