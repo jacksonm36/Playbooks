@@ -1,0 +1,67 @@
+---
+- name: Install and update ClamAV virus database
+  hosts: homenet
+  become: true
+  gather_facts: yes
+
+  tasks:
+
+    - name: Install ClamAV on Debian/Ubuntu
+      apt:
+        name:
+          - clamav
+          - clamav-freshclam
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install ClamAV on RHEL/CentOS/Fedora
+      yum:
+        name:
+          - clamav
+          - clamav-update
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Install ClamAV on Arch-based systems
+      pacman:
+        name: clamav
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Archlinux"
+
+    - name: Stop freshclam daemon (if running)
+      service:
+        name: clamav-freshclam
+        state: stopped
+      ignore_errors: true
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Run freshclam to download virus signature database
+      command: freshclam
+      register: freshclam_output
+      changed_when: "'bytecode.cvd' in freshclam_output.stdout or 'main.cvd' in freshclam_output.stdout"
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Show freshclam output
+      debug:
+        var: freshclam_output.stdout
+      when: freshclam_output is defined
+
+    - name: Install ClamAV on Windows Server (via Chocolatey)
+      win_chocolatey:
+        name: clamav
+        state: present
+      when: ansible_os_family == "Windows"
+
+    - name: Run freshclam on Windows to update virus database
+      win_command: '"C:\Program Files\ClamAV\freshclam.exe"'
+      args:
+        chdir: 'C:\Program Files\ClamAV'
+      register: win_freshclam
+      when: ansible_os_family == "Windows"
+
+    - name: Show Windows freshclam output
+      debug:
+        var: win_freshclam.stdout
+      when: win_freshclam is defined
