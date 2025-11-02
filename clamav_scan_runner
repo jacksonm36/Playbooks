@@ -54,12 +54,12 @@
     - name: Alert if threats were found
       debug:
         msg: "❌ Threats detected in one or more scanned paths!"
-      when: scan_result.stdout is defined and "'Infected files: 0'" not in scan_result.stdout
+      when: scan_result.stdout is defined and 'Infected files: 0' not in scan_result.stdout
 
     - name: Confirm system is clean
       debug:
         msg: "✅ No threats found in scanned paths."
-      when: scan_result.stdout is defined and "'Infected files: 0'" in scan_result.stdout
+      when: scan_result.stdout is defined and 'Infected files: 0' in scan_result.stdout
 
     - name: Report if scan failed
       debug:
