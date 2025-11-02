@@ -13,10 +13,15 @@
       - /home
 
   tasks:
+    - name: Check if ClamAV is installed
+      package:
+        name: "{{ 'clamav' if ansible_os_family == 'Debian' else 'clamav' if ansible_os_family == 'RedHat' else 'clamav' }}"
+        state: present
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
     - name: Stop freshclam daemon if running
       service:
-        name: clamav-freshclam
+        name: "{{ 'clamav-freshclam' if ansible_os_family in ['Debian', 'Archlinux'] else 'clam-freshclam' }}"
         state: stopped
       ignore_errors: true
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
@@ -24,7 +29,10 @@
     - name: Update virus signature database
       command: freshclam
       register: freshclam_output
-      changed_when: "'updated' in freshclam_output.stdout or 'bytecode.cvd' in freshclam_output.stdout"
+      changed_when: >
+        "'updated' in freshclam_output.stdout or 
+         'bytecode.cvd' in freshclam_output.stdout or
+         'Database updated' in freshclam_output.stdout"
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
     - name: Show freshclam output
@@ -33,49 +41,38 @@
       when: freshclam_output is defined
 
     - name: Run ClamAV scan on each path
-      command: clamscan -r {{ scan_path }}
-      register: scan_result
-      failed_when: scan_result.rc != 0 and scan_result.rc != 1
+      command: clamscan -r --max-filesize=100M --max-scansize=200M "{{ scan_path }}"
+      register: scan_results
+      failed_when: scan_results.rc != 0 and scan_results.rc != 1
       loop: "{{ scan_paths }}"
       loop_control:
         loop_var: scan_path
         label: "{{ scan_path }}"
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+      ignore_errors: true
 
-    - name: Show scan output
+    - name: Process scan results
       debug:
         msg: |
-          Scan completed for {{ scan_path }}.
-          {{ scan_result.stdout }}
-      loop: "{{ scan_paths }}"
+          Scan completed for {{ item.item }}.
+          Exit code: {{ item.rc }}
+          {% if item.rc == 0 %}
+          Status: No threats found
+          {% elif item.rc == 1 %}
+          Status: Threats detected!
+          Infected files found
+          {% else %}
+          Status: Scan failed with error
+          {% endif %}
+          {% if item.stdout %}
+          Output: {{ item.stdout | trim }}
+          {% endif %}
+      loop: "{{ scan_results.results }}"
       loop_control:
-        loop_var: scan_path
-        label: "{{ scan_path }}"
-      when: scan_result is defined
+        label: "{{ item.item }}"
 
-    - name: Report if threats were found
-      debug:
-        msg: "Threats detected in scanned path: {{ scan_path }}"
-      when: scan_result.stdout is defined and 'Infected files: 0' not in scan_result.stdout
-      loop: "{{ scan_paths }}"
-      loop_control:
-        loop_var: scan_path
-        label: "{{ scan_path }}"
-
-    - name: Report if no threats were found
-      debug:
-        msg: "No threats found in scanned path: {{ scan_path }}"
-      when: scan_result.stdout is defined and 'Infected files: 0' in scan_result.stdout
-      loop: "{{ scan_paths }}"
-      loop_control:
-        loop_var: scan_path
-        label: "{{ scan_path }}"
-
-    - name: Report if scan failed
-      debug:
-        msg: "Scan failed for path: {{ scan_path }}"
-      when: scan_result.rc != 0 and scan_result.rc != 1
-      loop: "{{ scan_paths }}"
-      loop_control:
-        loop_var: scan_path
-        label: "{{ scan_path }}"
+    - name: Start freshclam daemon if it was stopped
+      service:
+        name: "{{ 'clamav-freshclam' if ansible_os_family in ['Debian', 'Archlinux'] else 'clam-freshclam' }}"
+        state: started
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
