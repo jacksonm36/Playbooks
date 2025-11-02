@@ -53,14 +53,18 @@
         msg: "FreshClam update completed: {{ freshclam_output.stdout_lines | last }}"
       when: freshclam_output is defined and freshclam_output.stdout_lines | length > 0
 
-    - name: Run ClamAV scan and display results for each path
+    - name: Initialize scan results list
+      set_fact:
+        all_scan_results: []
+
+    - name: Run ClamAV scan on each path and collect results
       block:
         - name: Run ClamAV scan on path
           command: >
             clamscan -r 
             --max-filesize={{ max_filesize }}
             --max-scansize={{ max_scansize }}
-            "{{ item }}"
+            "{{ current_path }}"
           register: scan_result
           failed_when: scan_result.rc > 1
           ignore_errors: true
@@ -68,21 +72,20 @@
         - name: Display scan result
           debug:
             msg: |
-              === Scan Result for {{ item }} ===
+              === Scan Result for {{ current_path }} ===
               Exit Code: {{ scan_result.rc }}
               Status: {% if scan_result.rc == 0 %}CLEAN - No threats found{% elif scan_result.rc == 1 %}INFECTED - Threats detected!{% else %}ERROR - Scan failed (code: {{ scan_result.rc }}){% endif %}
               {% if scan_result.stdout %}
               Summary: {{ (scan_result.stdout_lines | last) | default('No summary available') }}
               {% endif %}
-      loop: "{{ scan_paths }}"
-      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-      loop_control:
-        label: "{{ item }}"
 
-    - name: Collect all scan results
-      set_fact:
-        all_scan_results: "{{ (all_scan_results | default([])) + [scan_result] }}"
+        - name: Store scan result with path info
+          set_fact:
+            all_scan_results: "{{ all_scan_results + [{'path': current_path, 'result': scan_result}] }}"
       loop: "{{ scan_paths }}"
+      loop_control:
+        loop_var: current_path
+        label: "{{ current_path }}"
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
     - name: Generate final scan summary
@@ -90,16 +93,39 @@
         msg: |
           === FINAL CLAMAV SCAN SUMMARY ===
           Total paths scanned: {{ all_scan_results | length }}
-          Clean paths: {{ (all_scan_results | selectattr('rc', 'equalto', 0) | list | length) }}
-          Infected paths: {{ (all_scan_results | selectattr('rc', 'equalto', 1) | list | length) }}
-          Failed scans: {{ (all_scan_results | selectattr('rc', 'gt', 1) | list | length) }}
+          Clean paths: {{ (all_scan_results | selectattr('result.rc', 'equalto', 0) | list | length) }}
+          Infected paths: {{ (all_scan_results | selectattr('result.rc', 'equalto', 1) | list | length) }}
+          Failed scans: {{ (all_scan_results | selectattr('result.rc', 'gt', 1) | list | length) }}
+          
+          {% set infected_paths = all_scan_results | selectattr('result.rc', 'equalto', 1) | map(attribute='path') | list %}
+          {% if infected_paths %}
+          INFECTED PATHS:
+          {% for path in infected_paths %}
+            - {{ path }}
+          {% endfor %}
+          {% endif %}
+          
+          {% set failed_paths = all_scan_results | selectattr('result.rc', 'gt', 1) | map(attribute='path') | list %}
+          {% if failed_paths %}
+          FAILED SCANS:
+          {% for path in failed_paths %}
+            - {{ path }}
+          {% endfor %}
+          {% endif %}
+
+    - name: Alert if scans failed
+      debug:
+        msg: "WARNING: {{ (all_scan_results | selectattr('result.rc', 'gt', 1) | list | length) }} scan(s) failed due to errors."
+      when: 
+        - (all_scan_results | selectattr('result.rc', 'gt', 1) | list | length) > 0
 
     - name: Fail playbook if infections were detected
       fail:
-        msg: "VIRUS SCAN ALERT: Infected files detected in {{ (all_scan_results | selectattr('rc', 'equalto', 1) | list | length) }} path(s). Immediate action required!"
+        msg: |
+          VIRUS SCAN ALERT: Infected files detected in {{ (all_scan_results | selectattr('result.rc', 'equalto', 1) | list | length) }} path(s)!
+          Infected paths: {{ all_scan_results | selectattr('result.rc', 'equalto', 1) | map(attribute='path') | list | join(', ') }}
       when: 
-        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-        - (all_scan_results | selectattr('rc', 'equalto', 1) | list | length) > 0
+        - (all_scan_results | selectattr('result.rc', 'equalto', 1) | list | length) > 0
 
     - name: Start freshclam daemon
       service:
@@ -110,7 +136,6 @@
 
     - name: Final success message
       debug:
-        msg: "ClamAV scan completed successfully. All scanned paths are clean."
+        msg: "ClamAV scan completed successfully. All {{ all_scan_results | length }} scanned paths are clean."
       when: 
-        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-        - (all_scan_results | selectattr('rc', 'equalto', 1) | list | length) == 0
+        - (all_scan_results | selectattr('result.rc', 'equalto', 1) | list | length) == 0
