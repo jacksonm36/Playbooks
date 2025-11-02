@@ -113,15 +113,15 @@
           {% endfor %}
           {% endif %}
 
-    - name: Alert if infections were detected
+    - name: Alert if scans failed
+      debug:
+        msg: "WARNING: {{ (scan_results.results | selectattr('rc', 'gt', 1) | list | length) }} scan(s) failed due to errors. Check individual scan results."
+      when: (scan_results.results | selectattr('rc', 'gt', 1) | list | length) > 0
+
+    - name: Fail playbook if infections were detected
       fail:
         msg: "VIRUS SCAN ALERT: Infected files detected in {{ (scan_results.results | selectattr('rc', 'equalto', 1) | list | length) }} path(s). Check scan results for details."
       when: (scan_results.results | selectattr('rc', 'equalto', 1) | list | length) > 0
-
-    - name: Alert if scans failed
-      warn:
-        msg: "{{ (scan_results.results | selectattr('rc', 'gt', 1) | list | length) }} scan(s) failed due to errors. Check individual scan results."
-      when: (scan_results.results | selectattr('rc', 'gt', 1) | list | length) > 0
 
     - name: Start freshclam daemon
       service:
@@ -135,3 +135,10 @@
         name: "{{ 'clamav-freshclam' if ansible_os_family in ['Debian', 'Archlinux'] else 'clam-freshclam' }}"
         state: started
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Final success message
+      debug:
+        msg: "ClamAV scan completed successfully. All paths are clean."
+      when: 
+        - (scan_results.results | selectattr('rc', 'equalto', 1) | list | length) == 0
+        - (scan_results.results | selectattr('rc', 'gt', 1) | list | length) == 0
