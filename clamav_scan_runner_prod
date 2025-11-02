@@ -1,0 +1,110 @@
+---
+- name: Update ClamAV and scan system paths
+  hosts: homenet@homenet
+  become: true
+  gather_facts: yes
+
+  vars:
+    scan_paths:
+      - /opt
+      - /etc
+      - /var/tmp
+      - /usr/local/bin
+      - /home
+
+  tasks:
+    - name: Stop freshclam daemon if running
+      ansible.builtin.service:
+        name: clamav-freshclam
+        state: stopped
+      ignore_errors: true
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Update virus signature database
+      ansible.builtin.command: freshclam
+      register: freshclam_output
+      changed_when: "'updated' in freshclam_output.stdout or 'bytecode.cvd' in freshclam_output.stdout"
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Show freshclam output
+      ansible.builtin.debug:
+        var: freshclam_output.stdout
+      when: freshclam_output is defined
+
+    - name: Run ClamAV scan on each path
+      ansible.builtin.command: clamscan -r --max-filesize=100M --max-scansize=200M "{{ item }}"
+      register: clamscan_result
+      loop: "{{ scan_paths }}"
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Gather scan results summary
+      ansible.builtin.set_fact:
+        clamav_results: "{{ clamav_results | default([]) + [ {
+          'path': item.item,
+          'rc': item.rc,
+          'infected': (item.rc == 1),
+          'failed': (item.rc > 1),
+          'summary': (item.stdout_lines | select('search', 'Infected files:') | list | join('')) | default(item.stdout | trim)
+        } ] }}"
+      loop: "{{ clamscan_result.results }}"
+
+    - name: Display scan result per path (text)
+      ansible.builtin.debug:
+        msg: |
+          [{{ item.path }}] => {% if item.failed %}SCAN ERROR{% elif item.infected %}INFECTED{% else %}CLEAN{% endif %}
+          {{ item.summary }}
+      loop: "{{ clamav_results }}"
+
+    - name: Show final summary and alert if needed
+      ansible.builtin.debug:
+        msg: |
+          === FINAL CLAMAV SCAN SUMMARY ===
+          Total scanned: {{ clamav_results | length }}
+          Clean: {{ clamav_results | rejectattr('infected') | rejectattr('failed') | list | length }}
+          Infected: {{ clamav_results | selectattr('infected') | list | length }}
+          Failed: {{ clamav_results | selectattr('failed') | list | length }}
+          {% if (clamav_results | selectattr('infected') | list | length) > 0 %}
+          --- ALERT: INFECTED paths found! ---
+          {% for r in clamav_results if r.infected %}
+            - {{ r.path }}
+          {% endfor %}
+          {% endif %}
+          {% if (clamav_results | selectattr('failed') | list | length) > 0 %}
+          --- ERROR: Scan failed on paths: ---
+          {% for r in clamav_results if r.failed %}
+            - {{ r.path }}
+          {% endfor %}
+          {% endif %}
+          {% if (clamav_results | selectattr('infected') | list | length) == 0 and (clamav_results | selectattr('failed') | list | length) == 0 %}
+          All paths clean and scanned successfully.
+          {% endif %}
+
+    - name: Check if clamav-freshclam is systemd-enabled
+      ansible.builtin.command: systemctl is-enabled clamav-freshclam
+      register: clamav_freshclam_enabled
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Enable clamav-freshclam service if not enabled
+      ansible.builtin.systemd:
+        name: clamav-freshclam
+        enabled: true
+      when:
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - clamav_freshclam_enabled.stdout is defined
+        - clamav_freshclam_enabled.stdout != "enabled"
+
+    - name: Start freshclam daemon
+      ansible.builtin.service:
+        name: clamav-freshclam
+        state: started
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Always succeed at the end (for Semaphore compatibility)
+      ansible.builtin.debug:
+        msg: "Playbook completed. See above for scan results. (Semaphore will treat this as success regardless of scan findings.)"
+      ignore_errors: true
+      when: true
