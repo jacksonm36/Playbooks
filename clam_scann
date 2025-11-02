@@ -1,5 +1,5 @@
 ---
-- name: Update ClamAV and scan system paths (fail-safe with timeout reporting)
+- name: Update ClamAV and scan system paths with timeout and reporting
   hosts: all
   become: true
   gather_facts: yes
@@ -33,7 +33,7 @@
         var: freshclam_output.stdout
       when: freshclam_output is defined
 
-    - name: Run ClamAV scan on each path (with timeout)
+    - name: Run ClamAV scan on each path with timeout
       shell: timeout {{ clamscan_timeout }}s clamscan -r "{{ scan_path }}"
       args:
         executable: /bin/bash
@@ -45,63 +45,53 @@
       failed_when: false
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
-    - name: Gather scan results summary (with timeout/kill detection)
+    - name: Gather scan results summary
       set_fact:
         clamav_results: "{{ clamav_results | default([]) + [ {
-          'path': item.item,
+          'path': scan_path,
           'rc': item.rc,
-          'timed_out': (item.rc == 124),
-          'killed': (item.rc == 137),
-          'infected': (item.rc == 1),
-          'failed': (item.rc > 1 and item.rc != 124 and item.rc != 137),
+          'timed_out': item.rc == 124,
+          'killed': item.rc == 137,
+          'infected': item.rc == 1,
+          'failed': item.rc > 1 and item.rc not in [124, 137],
           'summary': (
             item.stdout_lines | select('search', 'Infected files:') | list | join('')
             if item.stdout_lines is defined else (item.stdout | default(''))
           )
         } ] }}"
       loop: "{{ clamscan_result.results }}"
+      loop_control:
+        loop_var: item
 
     - name: Display scan result per path
       debug:
         msg: |
-          [{{ item.path }}] => {% if item.timed_out %}TIMEOUT (scan exceeded {{ clamscan_timeout }}s){% elif item.killed %}KILLED (memory/resource limit){% elif item.failed %}SCAN ERROR{% elif item.infected %}INFECTED{% else %}CLEAN{% endif %}
+          [{{ item.path }}] => {% if item.timed_out %}TIMEOUT{% elif item.killed %}KILLED{% elif item.failed %}ERROR{% elif item.infected %}INFECTED{% else %}CLEAN{% endif %}
           {{ item.summary }}
       loop: "{{ clamav_results }}"
 
-    - name: Show final summary and alert if needed
+    - name: Final summary
       debug:
         msg: |
-          === FINAL CLAMAV SCAN SUMMARY ===
+          === CLAMAV SCAN SUMMARY ===
           Total scanned: {{ clamav_results | length }}
           Clean: {{ clamav_results | rejectattr('infected') | rejectattr('failed') | rejectattr('timed_out') | rejectattr('killed') | list | length }}
           Infected: {{ clamav_results | selectattr('infected') | list | length }}
           Failed: {{ clamav_results | selectattr('failed') | list | length }}
           Timed out: {{ clamav_results | selectattr('timed_out') | list | length }}
-          Killed (memory): {{ clamav_results | selectattr('killed') | list | length }}
-          {% if clamav_results | selectattr('infected') | list | length > 0 %}
-          ALERT: INFECTED paths found:
+          Killed: {{ clamav_results | selectattr('killed') | list | length }}
           {% for r in clamav_results if r.infected %}
-            - {{ r.path }}
+          INFECTED: {{ r.path }}
           {% endfor %}
-          {% endif %}
-          {% if clamav_results | selectattr('failed') | list | length > 0 %}
-          ERROR: Scan failed on paths:
           {% for r in clamav_results if r.failed %}
-            - {{ r.path }}
+          ERROR: {{ r.path }}
           {% endfor %}
-          {% endif %}
-          {% if clamav_results | selectattr('timed_out') | list | length > 0 %}
-          WARNING: Scan TIMED OUT on paths:
           {% for r in clamav_results if r.timed_out %}
-            - {{ r.path }}
+          TIMEOUT: {{ r.path }}
           {% endfor %}
-          {% endif %}
-          {% if clamav_results | selectattr('killed') | list | length > 0 %}
-          WARNING: Scan KILLED (memory/resource) on paths:
           {% for r in clamav_results if r.killed %}
-            - {{ r.path }}
+          KILLED: {{ r.path }}
           {% endfor %}
-          {% endif %}
           {% if (
             clamav_results | selectattr('infected') | list | length == 0
             and clamav_results | selectattr('failed') | list | length == 0
@@ -133,7 +123,7 @@
         state: started
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
-    - name: Always succeed at the end (for Semaphore compatibility)
+    - name: Always succeed at the end
       debug:
         msg: "Playbook completed. See above for scan results."
       ignore_errors: true
