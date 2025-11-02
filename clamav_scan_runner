@@ -1,5 +1,5 @@
 ---
-- name: Update ClamAV DB and scan common paths
+- name: Update ClamAV and scan system paths
   hosts: docker_hosts
   become: true
   gather_facts: yes
@@ -14,14 +14,14 @@
 
   tasks:
 
-    - name: Stop freshclam daemon (if running)
+    - name: Stop freshclam daemon if running
       service:
         name: clamav-freshclam
         state: stopped
       ignore_errors: true
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
-    - name: Run freshclam to update virus database
+    - name: Update virus signature database
       command: freshclam
       register: freshclam_output
       changed_when: "'updated' in freshclam_output.stdout or 'bytecode.cvd' in freshclam_output.stdout"
@@ -32,36 +32,50 @@
         var: freshclam_output.stdout
       when: freshclam_output is defined
 
-    - name: Run ClamAV scan on common paths
-      command: clamscan -r {{ item }}
+    - name: Run ClamAV scan on each path
+      command: clamscan -r {{ scan_path }}
       register: scan_result
       failed_when: scan_result.rc != 0 and scan_result.rc != 1
       loop: "{{ scan_paths }}"
       loop_control:
-        label: "{{ item }}"
+        loop_var: scan_path
+        label: "{{ scan_path }}"
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
 
-    - name: Report scan result per path
+    - name: Show scan output
       debug:
         msg: |
-          ✅ Scan completed for {{ item }}.
+          Scan completed for {{ scan_path }}.
           {{ scan_result.stdout }}
       loop: "{{ scan_paths }}"
       loop_control:
-        label: "{{ item }}"
+        loop_var: scan_path
+        label: "{{ scan_path }}"
       when: scan_result is defined
 
-    - name: Alert if threats were found
+    - name: Report if threats were found
       debug:
-        msg: "❌ Threats detected in one or more scanned paths!"
+        msg: "Threats detected in scanned path: {{ scan_path }}"
       when: scan_result.stdout is defined and 'Infected files: 0' not in scan_result.stdout
+      loop: "{{ scan_paths }}"
+      loop_control:
+        loop_var: scan_path
+        label: "{{ scan_path }}"
 
-    - name: Confirm system is clean
+    - name: Report if no threats were found
       debug:
-        msg: "✅ No threats found in scanned paths."
+        msg: "No threats found in scanned path: {{ scan_path }}"
       when: scan_result.stdout is defined and 'Infected files: 0' in scan_result.stdout
+      loop: "{{ scan_paths }}"
+      loop_control:
+        loop_var: scan_path
+        label: "{{ scan_path }}"
 
     - name: Report if scan failed
       debug:
-        msg: "⚠️ ClamAV scan failed to complete properly."
+        msg: "Scan failed for path: {{ scan_path }}"
       when: scan_result.rc != 0 and scan_result.rc != 1
+      loop: "{{ scan_paths }}"
+      loop_control:
+        loop_var: scan_path
+        label: "{{ scan_path }}"
