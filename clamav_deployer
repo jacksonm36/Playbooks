@@ -1,0 +1,42 @@
+---
+- name: Run ClamAV scan on all hosts
+  hosts: all
+  become: true
+  vars:
+    script_url: "https://raw.githubusercontent.com/jacksonm36/Playbooks/main/clamscan.sh"
+    script_path: "/usr/local/bin/clamscan.sh"
+    log_dir: "/var/log/clamav"
+
+  tasks:
+
+    - name: Ensure log directory exists
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download clamscan.sh from GitHub
+      get_url:
+        url: "{{ script_url }}"
+        dest: "{{ script_path }}"
+        mode: '0755'
+
+    - name: Run ClamAV scan script
+      command: "{{ script_path }}"
+      register: scan_result
+      ignore_errors: true
+
+    - name: Show scan output
+      debug:
+        msg: |
+          Host: {{ inventory_hostname }}
+          Exit Code: {{ scan_result.rc }}
+          Stdout:
+          {{ scan_result.stdout | default('No output') }}
+          Stderr:
+          {{ scan_result.stderr | default('No errors') }}
+
+    - name: Fail if scan failed
+      fail:
+        msg: "ClamAV scan failed on {{ inventory_hostname }} with exit code {{ scan_result.rc }}"
+      when: scan_result.rc != 0
