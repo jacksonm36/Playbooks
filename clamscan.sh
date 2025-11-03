@@ -1,7 +1,16 @@
 #!/bin/bash
 
 # ─── CONFIG ─────────────────────────────────────────────────────────────
-SCAN_PATHS=("/opt" "/etc" "/var/tmp" "/usr/local/bin" "/home")
+SCAN_PATHS=(
+  "/opt"
+  "/etc"
+  "/var/tmp"
+  "/usr/local/bin"
+  "/home"
+  "/tmp"           # Common drop zone for malware
+  "/dev/shm"       # Shared memory, often abused for in-memory payloads
+  "/root"          # Privileged user home
+)
 LOG_DIR="/var/log/clamav"
 HOSTNAME=$(hostname)
 TIMESTAMP=$(date +%F_%H-%M-%S)
