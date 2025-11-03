@@ -128,7 +128,7 @@
         - freshclam_status is defined or clamd_status is defined
 
     - name: Run ClamAV scan on each path using clamd daemon with timeout (synchronous)
-      shell: timeout {{ clamscan_timeout }}s clamdscan -r "{{ scan_path }}"
+      shell: timeout {{ clamscan_timeout }}s clamdscan -r "{{ scan_path }}" 2>&1 | tee "{{ scan_log_dir }}/scan-{{ scan_path | basename | regex_replace('/', '-') }}.log"
       args:
         executable: /bin/bash
       register: clamscan_raw
