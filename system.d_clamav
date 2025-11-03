@@ -186,3 +186,4 @@
       when: 
         - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
         - freshclam_enabled is defined
+
