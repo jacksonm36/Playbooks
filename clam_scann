@@ -1,191 +1,261 @@
----
-- name: Update ClamAV and scan system paths with timeout and reporting
-  hosts: all
-  become: true
-  gather_facts: yes
+#!/bin/bash
+# This bash script is used for scanning malicious files on Linux device using ClamAV antivirus
+# Based on clamav-scan.yml Ansible playbook
 
-  vars:
-    scan_paths:
-      - /opt
-      - /etc
-      - /var/tmp
-      - /usr/local/bin
-      - /home
-    clamscan_timeout: 7200
+set -euo pipefail
 
-  tasks:
+# Configuration variables
+pdir=/var/log/clamav-scans          # Parent directory for logs and results
+flog="$pdir/clamscanscript.log"     # Main script log file
+rdir="$pdir/Results"                # Scan results directory path
+clamlogs=/var/log/clamav-scans      # ClamAV logs directory
+clamscan_timeout=900                # 15 minutes timeout per path (in seconds)
 
-    - name: Check if timeout command is available
-      command: which timeout
-      register: timeout_check
-      changed_when: false
-      failed_when: false
-      check_mode: false
+# Directories to be scanned
+scan_paths=(
+    "/opt"
+    "/etc"
+    "/var/tmp"
+    "/usr/local/bin"
+    "/home"
+)
 
-    - name: Install timeout utility if missing (Debian/Ubuntu)
-      apt:
-        name: coreutils
-        state: present
-      when: 
-        - ansible_os_family == "Debian"
-        - timeout_check.rc != 0
-        - not ansible_check_mode
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-    - name: Install timeout utility if missing (RedHat/CentOS)
-      yum:
-        name: coreutils
-        state: present
-      when:
-        - ansible_os_family == "RedHat"
-        - timeout_check.rc != 0
-        - not ansible_check_mode
+# Initialize variables
+total_scanned=0
+total_clean=0
+total_infected=0
+total_failed=0
+total_timed_out=0
+infected_paths=()
+failed_paths=()
+timed_out_paths=()
 
-    - name: Install timeout utility if missing (Archlinux)
-      pacman:
-        name: coreutils
-        state: present
-        update_cache: yes
-      when:
-        - ansible_os_family == "Archlinux"
-        - timeout_check.rc != 0
-        - not ansible_check_mode
+# Function to log messages
+log_message() {
+    local message="$1"
+    echo "$(date +"%b %d %H:%M:%S") $message" | tee -a "$flog"
+}
 
-    - name: Check if freshclam service exists
-      command: systemctl list-unit-files clamav-freshclam.service
-      register: freshclam_service_check
-      changed_when: false
-      failed_when: false
-      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+# Function to create directories
+create_directories() {
+    if [ ! -d "$pdir" ]; then
+        mkdir -p "$pdir"
+        log_message "The directory $pdir created!"
+    else
+        log_message "The directory $pdir exists!"
+    fi
 
-    - name: Check freshclam service status
-      systemd:
-        name: clamav-freshclam
-      register: freshclam_status
-      when: 
-        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-        - freshclam_service_check.rc == 0
+    if [ ! -d "$rdir" ]; then
+        mkdir -p "$rdir"
+        log_message "The directory $rdir created!"
+    else
+        log_message "The directory $rdir exists!"
+    fi
 
-    - name: Stop freshclam daemon if running
-      systemd:
-        name: clamav-freshclam
-        state: stopped
-      when: 
-        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-        - freshclam_status is defined
-        - freshclam_status.status.ActiveState == "active"
+    if [ ! -d "$clamlogs" ]; then
+        mkdir -p "$clamlogs"
+        log_message "The directory $clamlogs created!"
+    else
+        log_message "The directory $clamlogs exists!"
+    fi
+}
 
-    - name: Update virus signature database
-      command: freshclam
-      register: freshclam_output
-      changed_when: "'updated' in freshclam_output.stdout or 'bytecode.cvd' in freshclam_output.stdout or 'main.cvd' in freshclam_output.stdout or 'daily.cvd' in freshclam_output.stdout"
-      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
 
-    - name: Show freshclam output
-      debug:
-        var: freshclam_output.stdout
-      when: freshclam_output is defined
+# Function to update virus database
+update_database() {
+    log_message "Updating ClamAV virus signature database..."
+    
+    if command_exists freshclam; then
+        # Stop freshclam daemon if running to avoid conflicts
+        if systemctl is-active --quiet clamav-freshclam 2>/dev/null; then
+            log_message "Stopping freshclam daemon..."
+            systemctl stop clamav-freshclam 2>&1 | tee -a "$flog" || true
+        fi
+        
+        freshclam_output=$(freshclam 2>&1) || true
+        echo "$freshclam_output" | tee -a "$flog"
+        
+        # Restart freshclam daemon if it was enabled
+        if systemctl is-enabled --quiet clamav-freshclam 2>/dev/null; then
+            log_message "Restarting freshclam daemon..."
+            systemctl start clamav-freshclam 2>&1 | tee -a "$flog" || true
+        fi
+        
+        log_message "Virus database update completed!"
+    else
+        log_message "WARNING: freshclam command not found. Skipping database update."
+    fi
+}
 
-    - name: Run ClamAV scan on each path with timeout
-      shell: timeout {{ clamscan_timeout }}s clamscan -r "{{ scan_path }}"
-      args:
-        executable: /bin/bash
-      register: clamscan_raw
-      loop: "{{ scan_paths }}"
-      loop_control:
-        loop_var: scan_path
-      changed_when: false
-      failed_when: false
-      async: "{{ clamscan_timeout + 60 }}"
-      poll: 10
-      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+# Function to scan a single path
+scan_path() {
+    local scan_path="$1"
+    local scan_name=$(basename "$scan_path" | sed 's/\//-/g')
+    local rfls="$rdir/clamscan-results-${scan_name}-$(date +"%Y.%m.%d.%H.%M.%S").log"
+    
+    log_message "Starting scan of $scan_path..."
+    
+    # Check if clamscan exists
+    if ! command_exists clamscan; then
+        log_message "ERROR: clamscan command not found!"
+        ((total_failed++))
+        failed_paths+=("$scan_path (clamscan not found)")
+        return 1
+    fi
+    
+    # Run scan with timeout
+    local scan_start=$(date +%s)
+    local scan_exit_code=0
+    
+    if timeout "$clamscan_timeout" clamscan -r "$scan_path" > "$rfls" 2>&1; then
+        scan_exit_code=$?
+    else
+        scan_exit_code=$?
+        
+        # Check if it was a timeout (exit code 124)
+        if [ $scan_exit_code -eq 124 ]; then
+            log_message "WARNING: Scan of $scan_path timed out after ${clamscan_timeout}s"
+            ((total_timed_out++))
+            timed_out_paths+=("$scan_path")
+            echo "$(date +"%b %d %H:%M:%S") $(hostname) ClamScan Results for $scan_path: TIMEOUT after ${clamscan_timeout} seconds" >> "$rfls"
+            return 0
+        fi
+    fi
+    
+    local scan_end=$(date +%s)
+    local scan_duration=$((scan_end - scan_start))
+    
+    # Add formatting to results file
+    sed -i 's/^/ /' "$rfls"
+    sed -i "1s/^/$(date +"%b %d %H:%M:%S") $(hostname) ClamScan Results for $scan_path: \n/" "$rfls"
+    
+    # Check scan results
+    if grep -q "Infected files: 0" "$rfls"; then
+        log_message "✓ $scan_path: CLEAN (scanned in ${scan_duration}s)"
+        ((total_clean++))
+        return 0
+    elif grep -qi "infected files:" "$rfls"; then
+        local infected_count=$(grep -i "infected files:" "$rfls" | grep -oE "[0-9]+" | head -1)
+        log_message "${RED}✗ $scan_path: INFECTED (${infected_count} file(s))${NC}"
+        ((total_infected++))
+        infected_paths+=("$scan_path ($infected_count infected)")
+        return 1
+    elif [ $scan_exit_code -ne 0 ] && [ $scan_exit_code -ne 124 ]; then
+        log_message "${RED}✗ $scan_path: FAILED (exit code: $scan_exit_code)${NC}"
+        ((total_failed++))
+        failed_paths+=("$scan_path")
+        return 1
+    else
+        log_message "${YELLOW}? $scan_path: UNKNOWN STATUS${NC}"
+        ((total_failed++))
+        failed_paths+=("$scan_path (unknown)")
+        return 1
+    fi
+}
 
-    - name: Combine scan path with result
-      set_fact:
-        clamav_results: "{{ clamav_results | default([]) + [ {
-          'path': path_item,
-          'rc': result_item.rc | default(-1),
-          'stdout': result_item.stdout | default(''),
-          'stderr': result_item.stderr | default(''),
-          'timed_out': (result_item.rc | default(-1)) == 124,
-          'killed': (result_item.rc | default(-1)) == 137,
-          'infected': (result_item.rc | default(-1)) == 1,
-          'failed': (result_item.rc | default(-1)) > 1 and (result_item.rc | default(-1)) not in [124, 137],
-          'summary': (
-            (result_item.stdout_lines | select('search', 'Infected files:') | list | join(''))
-            if result_item.stdout_lines is defined and result_item.stdout_lines | length > 0
-            else (
-              (result_item.stdout | default('') | regex_search('Infected files:.*', multiline=True))
-              if result_item.stdout is defined
-              else ''
-            )
-          )
-        } ] }}"
-      loop: "{{ scan_paths | zip(clamscan_raw.results | default([])) | list }}"
-      loop_control:
-        loop_var: path_result_pair
-      vars:
-        path_item: "{{ path_result_pair[0] }}"
-        result_item: "{{ path_result_pair[1] }}"
-      when: clamscan_raw is defined and clamscan_raw.results is defined
+# Function to display summary
+display_summary() {
+    echo ""
+    echo "========================================"
+    echo "   CLAMAV SCAN SUMMARY"
+    echo "========================================"
+    echo "Total paths scanned: $total_scanned"
+    echo "Clean:              $total_clean"
+    echo "Infected:           $total_infected"
+    echo "Failed:             $total_failed"
+    echo "Timed out:          $total_timed_out"
+    echo "========================================"
+    
+    if [ ${#infected_paths[@]} -gt 0 ]; then
+        echo ""
+        echo "${RED}INFECTED PATHS:${NC}"
+        for path in "${infected_paths[@]}"; do
+            echo "  - $path"
+        done
+    fi
+    
+    if [ ${#failed_paths[@]} -gt 0 ]; then
+        echo ""
+        echo "${RED}FAILED PATHS:${NC}"
+        for path in "${failed_paths[@]}"; do
+            echo "  - $path"
+        done
+    fi
+    
+    if [ ${#timed_out_paths[@]} -gt 0 ]; then
+        echo ""
+        echo "${YELLOW}TIMED OUT PATHS:${NC}"
+        for path in "${timed_out_paths[@]}"; do
+            echo "  - $path"
+        done
+    fi
+    
+    echo ""
+    
+    # Determine overall status
+    if [ $total_infected -gt 0 ]; then
+        echo "${RED}STATUS: INFECTED FILES FOUND!${NC}"
+        log_message "STATUS: INFECTED FILES FOUND!"
+        return 1
+    elif [ $total_failed -gt 0 ]; then
+        echo "${RED}STATUS: SOME SCANS FAILED!${NC}"
+        log_message "STATUS: SOME SCANS FAILED!"
+        return 1
+    elif [ $total_timed_out -gt 0 ]; then
+        echo "${YELLOW}STATUS: SOME SCANS TIMED OUT!${NC}"
+        log_message "STATUS: SOME SCANS TIMED OUT!"
+        return 0
+    else
+        echo "${GREEN}STATUS: ALL CLEAN!${NC}"
+        log_message "STATUS: ALL CLEAN!"
+        return 0
+    fi
+}
 
-    - name: Display scan result per path
-      debug:
-        msg: |
-          [{{ item.path }}] => {% if item.timed_out %}TIMEOUT{% elif item.killed %}KILLED{% elif item.failed %}ERROR{% elif item.infected %}INFECTED{% else %}CLEAN{% endif %}
-          {% if item.summary %}{{ item.summary }}{% endif %}
-          {% if item.stderr and item.stderr | length > 0 %}STDERR: {{ item.stderr }}{% endif %}
-      loop: "{{ clamav_results | default([]) }}"
-      when: clamav_results is defined
+# Main execution
+main() {
+    log_message "========================================"
+    log_message "ClamAV Scan Script Started"
+    log_message "Hostname: $(hostname)"
+    log_message "========================================"
+    
+    # Create directories
+    create_directories
+    
+    # Update virus database
+    update_database
+    
+    # Scan each path
+    log_message "Starting scans of ${#scan_paths[@]} path(s)..."
+    
+    for scan_path in "${scan_paths[@]}"; do
+        if [ -e "$scan_path" ]; then
+            ((total_scanned++))
+            scan_path "$scan_path" || true
+        else
+            log_message "WARNING: Path $scan_path does not exist. Skipping..."
+        fi
+    done
+    
+    # Display summary
+    display_summary
+    summary_exit_code=$?
+    
+    log_message "Script completed!"
+    log_message "========================================"
+    
+    exit $summary_exit_code
+}
 
-    - name: Final summary
-      debug:
-        msg: |
-          === CLAMAV SCAN SUMMARY ===
-          Total scanned: {{ (clamav_results | default([])) | length }}
-          Clean: {{ (clamav_results | default([])) | rejectattr('infected', 'equalto', true) | rejectattr('failed', 'equalto', true) | rejectattr('timed_out', 'equalto', true) | rejectattr('killed', 'equalto', true) | list | length }}
-          Infected: {{ (clamav_results | default([])) | selectattr('infected', 'equalto', true) | list | length }}
-          Failed: {{ (clamav_results | default([])) | selectattr('failed', 'equalto', true) | list | length }}
-          Timed out: {{ (clamav_results | default([])) | selectattr('timed_out', 'equalto', true) | list | length }}
-          Killed: {{ (clamav_results | default([])) | selectattr('killed', 'equalto', true) | list | length }}
-          {% for r in (clamav_results | default([])) if r.infected %}
-          INFECTED: {{ r.path }}
-          {% endfor %}
-          {% for r in (clamav_results | default([])) if r.failed %}
-          ERROR: {{ r.path }}
-          {% endfor %}
-          {% for r in (clamav_results | default([])) if r.timed_out %}
-          TIMEOUT: {{ r.path }}
-          {% endfor %}
-          {% for r in (clamav_results | default([])) if r.killed %}
-          KILLED: {{ r.path }}
-          {% endfor %}
-          {% set clean_count = (clamav_results | default([])) | rejectattr('infected', 'equalto', true) | rejectattr('failed', 'equalto', true) | rejectattr('timed_out', 'equalto', true) | rejectattr('killed', 'equalto', true) | list | length %}
-          {% set total_count = (clamav_results | default([])) | length %}
-          {% if clean_count == total_count and total_count > 0 %}
-          All paths clean and scanned successfully.
-          {% endif %}
-      when: clamav_results is defined
-
-    - name: Restart freshclam daemon if it was previously running
-      systemd:
-        name: clamav-freshclam
-        state: started
-      when:
-        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-        - freshclam_status is defined
-        - freshclam_status.status.ActiveState == "active"
-
-    - name: Check if clamav-freshclam is systemd-enabled
-      command: systemctl is-enabled clamav-freshclam.service
-      register: freshclam_enabled
-      changed_when: false
-      failed_when: false
-      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-
-    - name: Display freshclam service status
-      debug:
-        msg: "clamav-freshclam service is {{ freshclam_enabled.stdout | default('unknown') }}"
-      when: 
-        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
-        - freshclam_enabled is defined
-
+# Run main function
+main "$@"
