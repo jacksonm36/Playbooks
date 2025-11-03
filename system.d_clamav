@@ -1,0 +1,243 @@
+---
+- name: Update ClamAV and scan system paths with timeout and reporting using daemon
+  hosts: all
+  become: true
+  gather_facts: yes
+
+  vars:
+    scan_paths:
+      - /opt
+      - /etc
+      - /var/tmp
+      - /usr/local/bin
+      - /home
+    clamscan_timeout: 900  # 15 minutes timeout per path to prevent excessive runtime
+    scan_log_dir: /var/log/clamav-scans
+
+  tasks:
+
+    - name: Check if timeout command is available
+      command: which timeout
+      register: timeout_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Install timeout utility if missing (Debian/Ubuntu)
+      apt:
+        name: coreutils
+        state: present
+      when: 
+        - ansible_os_family == "Debian"
+        - timeout_check.rc != 0
+        - not ansible_check_mode
+
+    - name: Install timeout utility if missing (RedHat/CentOS)
+      yum:
+        name: coreutils
+        state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - timeout_check.rc != 0
+        - not ansible_check_mode
+
+    - name: Install timeout utility if missing (Archlinux)
+      pacman:
+        name: coreutils
+        state: present
+        update_cache: yes
+      when:
+        - ansible_os_family == "Archlinux"
+        - timeout_check.rc != 0
+        - not ansible_check_mode
+
+    - name: Check if freshclam service exists
+      command: systemctl list-unit-files clamav-freshclam.service
+      register: freshclam_service_check
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Check if clamd service exists
+      command: systemctl list-unit-files clamd.service
+      register: clamd_service_check
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Check freshclam service status
+      systemd:
+        name: clamav-freshclam
+      register: freshclam_status
+      when: 
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - freshclam_service_check.rc == 0
+
+    - name: Check clamd service status
+      systemd:
+        name: clamd
+      register: clamd_status
+      when: 
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - clamd_service_check.rc == 0
+
+    - name: Start clamd service if not running
+      systemd:
+        name: clamd
+        state: started
+        enabled: yes
+      when: 
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - clamd_service_check.rc == 0
+
+    - name: Stop freshclam daemon if running
+      systemd:
+        name: clamav-freshclam
+        state: stopped
+      when: 
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - freshclam_status is defined
+        - freshclam_status.status.ActiveState == "active"
+
+    - name: Update virus signature database
+      command: freshclam
+      register: freshclam_output
+      changed_when: "'updated' in freshclam_output.stdout or 'bytecode.cvd' in freshclam_output.stdout or 'main.cvd' in freshclam_output.stdout or 'daily.cvd' in freshclam_output.stdout"
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Show freshclam output
+      debug:
+        var: freshclam_output.stdout
+      when: freshclam_output is defined
+
+    - name: Create scan log directory
+      file:
+        path: "{{ scan_log_dir }}"
+        state: directory
+        mode: '0755'
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Display ClamAV service status
+      debug:
+        msg: |
+          === CLAMAV SERVICE STATUS ===
+          FreshClam: {{ freshclam_status.status.ActiveState | default('N/A') }} ({{ freshclam_status.status.SubState | default('N/A') }})
+          Clamd: {{ clamd_status.status.ActiveState | default('N/A') }} ({{ clamd_status.status.SubState | default('N/A') }})
+      when: 
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - freshclam_status is defined or clamd_status is defined
+
+    - name: Run ClamAV scan on each path using clamd daemon with timeout (synchronous)
+      shell: timeout {{ clamscan_timeout }}s clamdscan -r "{{ scan_path }}"
+      args:
+        executable: /bin/bash
+      register: clamscan_raw
+      loop: "{{ scan_paths }}"
+      loop_control:
+        loop_var: scan_path
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Combine scan path with result
+      set_fact:
+        clamav_results: "{{ clamav_results | default([]) + [ {
+          'path': path_item,
+          'rc': result_item.rc | default(-1),
+          'stdout': result_item.stdout | default(''),
+          'stderr': result_item.stderr | default(''),
+          'timed_out': (result_item.rc | default(-1)) == 124,
+          'killed': (result_item.rc | default(-1)) == 137,
+          'infected': (result_item.rc | default(-1)) == 1,
+          'failed': (result_item.rc | default(-1)) > 1 and (result_item.rc | default(-1)) not in [124, 137],
+          'summary': (
+            (result_item.stdout_lines | select('search', 'Infected files:') | list | join(''))
+            if result_item.stdout_lines is defined and result_item.stdout_lines | length > 0
+            else (
+              (result_item.stdout | default('') | regex_search('Infected files:.*', multiline=True))
+              if result_item.stdout is defined
+              else ''
+            )
+          )
+        } ] }}"
+      loop: "{{ scan_paths | zip(clamscan_raw.results | default([])) | list }}"
+      loop_control:
+        loop_var: path_result_pair
+      vars:
+        path_item: "{{ path_result_pair[0] }}"
+        result_item: "{{ path_result_pair[1] }}"
+      when: clamscan_raw is defined and clamscan_raw.results is defined
+
+    - name: Display scan result per path
+      debug:
+        msg: |
+          [{{ item.path }}] => {% if item.timed_out %}TIMEOUT{% elif item.killed %}KILLED{% elif item.failed %}ERROR{% elif item.infected %}INFECTED{% else %}CLEAN{% endif %}
+          {% if item.summary %}{{ item.summary }}{% endif %}
+          {% if item.stderr and item.stderr | length > 0 %}STDERR: {{ item.stderr }}{% endif %}
+      loop: "{{ clamav_results | default([]) }}"
+      when: clamav_results is defined
+
+    - name: Final summary
+      debug:
+        msg: |
+          === CLAMAV SCAN SUMMARY ===
+          Total scanned: {{ (clamav_results | default([])) | length }}
+          Clean: {{ (clamav_results | default([])) | rejectattr('infected', 'equalto', true) | rejectattr('failed', 'equalto', true) | rejectattr('timed_out', 'equalto', true) | rejectattr('killed', 'equalto', true) | list | length }}
+          Infected: {{ (clamav_results | default([])) | selectattr('infected', 'equalto', true) | list | length }}
+          Failed: {{ (clamav_results | default([])) | selectattr('failed', 'equalto', true) | list | length }}
+          Timed out: {{ (clamav_results | default([])) | selectattr('timed_out', 'equalto', true) | list | length }}
+          Killed: {{ (clamav_results | default([])) | selectattr('killed', 'equalto', true) | list | length }}
+          {% for r in (clamav_results | default([])) if r.infected %}
+          INFECTED: {{ r.path }}
+          {% endfor %}
+          {% for r in (clamav_results | default([])) if r.failed %}
+          ERROR: {{ r.path }}
+          {% endfor %}
+          {% for r in (clamav_results | default([])) if r.timed_out %}
+          TIMEOUT: {{ r.path }}
+          {% endfor %}
+          {% for r in (clamav_results | default([])) if r.killed %}
+          KILLED: {{ r.path }}
+          {% endfor %}
+          {% set clean_count = (clamav_results | default([])) | rejectattr('infected', 'equalto', true) | rejectattr('failed', 'equalto', true) | rejectattr('timed_out', 'equalto', true) | rejectattr('killed', 'equalto', true) | list | length %}
+          {% set total_count = (clamav_results | default([])) | length %}
+          {% if clean_count == total_count and total_count > 0 %}
+          All paths clean and scanned successfully.
+          {% endif %}
+      when: clamav_results is defined
+
+    - name: Restart freshclam daemon if it was previously running
+      systemd:
+        name: clamav-freshclam
+        state: started
+      when:
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - freshclam_status is defined
+        - freshclam_status.status.ActiveState == "active"
+
+    - name: Check freshclam service status after scan
+      systemd:
+        name: clamav-freshclam
+      register: freshclam_final_status
+      when: 
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - freshclam_service_check.rc == 0
+
+    - name: Check clamd service status after scan
+      systemd:
+        name: clamd
+      register: clamd_final_status
+      when: 
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - clamd_service_check.rc == 0
+
+    - name: Final service status report
+      debug:
+        msg: |
+          === FINAL SERVICE STATUS ===
+          FreshClam: {{ freshclam_final_status.status.ActiveState | default('N/A') }} (enabled: {{ freshclam_final_status.status.UnitFileState | default('N/A') }})
+          Clamd: {{ clamd_final_status.status.ActiveState | default('N/A') }} (enabled: {{ clamd_final_status.status.UnitFileState | default('N/A') }})
+      when: 
+        - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+        - (freshclam_final_status is defined or clamd_final_status is defined)
+
