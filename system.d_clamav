@@ -1,5 +1,5 @@
 ---
-- name: Update ClamAV and scan system paths with timeout and reporting using daemon
+- name: Update ClamAV and scan system paths with timeout and reporting
   hosts: all
   become: true
   gather_facts: yes
@@ -61,6 +61,20 @@
     - name: Check if clamd service exists
       command: systemctl list-unit-files clamd.service
       register: clamd_service_check
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Check if clamdscan command exists
+      command: which clamdscan
+      register: clamdscan_check
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
+
+    - name: Check if clamscan command exists
+      command: which clamscan
+      register: clamscan_check
       changed_when: false
       failed_when: false
       when: ansible_os_family in ["Debian", "RedHat", "Archlinux"]
@@ -127,8 +141,13 @@
         - ansible_os_family in ["Debian", "RedHat", "Archlinux"]
         - freshclam_status is defined or clamd_status is defined
 
-    - name: Run ClamAV scan on each path using clamd daemon with timeout (synchronous)
-      shell: timeout {{ clamscan_timeout }}s clamdscan -r "{{ scan_path }}" 2>&1 | tee "{{ scan_log_dir }}/scan-{{ scan_path | basename | regex_replace('/', '-') }}.log"
+    - name: Run ClamAV scan on each path using available scanner with timeout (synchronous)
+      shell: |
+        if command -v clamdscan >/dev/null 2>&1 && systemctl is-active --quiet clamd 2>/dev/null; then
+          timeout {{ clamscan_timeout }}s clamdscan "{{ scan_path }}" 2>&1 | tee "{{ scan_log_dir }}/scan-{{ scan_path | basename | regex_replace('/', '-') }}.log"
+        else
+          timeout {{ clamscan_timeout }}s clamscan -r "{{ scan_path }}" 2>&1 | tee "{{ scan_log_dir }}/scan-{{ scan_path | basename | regex_replace('/', '-') }}.log"
+        fi
       args:
         executable: /bin/bash
       register: clamscan_raw
