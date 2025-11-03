@@ -1,35 +1,42 @@
 #!/bin/bash
 
-# CONFIGURATION
+# ─── CONFIG ─────────────────────────────────────────────────────────────
 SCAN_PATHS=("/opt" "/etc" "/var/tmp" "/usr/local/bin" "/home")
 LOG_DIR="/var/log/clamav"
+HOSTNAME=$(hostname)
 TIMESTAMP=$(date +%F_%H-%M-%S)
-REPORT_FILE="$LOG_DIR/clamav_scan_report_$TIMESTAMP.log"
-SUMMARY_FILE="$LOG_DIR/clamav_summary_$TIMESTAMP.log"
+REPORT_FILE="$LOG_DIR/scan_${HOSTNAME}_$TIMESTAMP.log"
+SUMMARY_FILE="$LOG_DIR/summary_${HOSTNAME}_$TIMESTAMP.log"
 
-# Ensure log directory exists
+# ─── PREP ───────────────────────────────────────────────────────────────
 mkdir -p "$LOG_DIR"
+echo "[+] Host: $HOSTNAME" | tee "$SUMMARY_FILE"
+echo "[+] Timestamp: $TIMESTAMP" | tee -a "$SUMMARY_FILE"
+echo "[+] Updating ClamAV signatures..." | tee -a "$SUMMARY_FILE"
+freshclam >> "$SUMMARY_FILE" 2>&1
 
-# Update ClamAV signatures
-echo "[+] Updating ClamAV signatures..."
-freshclam
+# ─── SCAN ───────────────────────────────────────────────────────────────
+echo "[+] Starting scan..." | tee -a "$SUMMARY_FILE"
+TOTAL_INFECTED=0
+TOTAL_SCANNED=0
 
-# Run scans
-echo "[+] Starting ClamAV scan..."
 for path in "${SCAN_PATHS[@]}"; do
-    echo "Scanning: $path" | tee -a "$REPORT_FILE"
-    clamscan -r --bell -i "$path" | tee -a "$REPORT_FILE"
+    echo "[*] Scanning $path..." | tee -a "$REPORT_FILE"
+    clamscan -r -i "$path" >> "$REPORT_FILE"
+    
+    INFECTED=$(grep "Infected files:" "$REPORT_FILE" | tail -1 | awk '{print $3}')
+    SCANNED=$(grep "Scanned files:" "$REPORT_FILE" | tail -1 | awk '{print $3}')
+    
+    echo "→ $path: $SCANNED scanned, $INFECTED infected" | tee -a "$SUMMARY_FILE"
+    TOTAL_INFECTED=$((TOTAL_INFECTED + INFECTED))
+    TOTAL_SCANNED=$((TOTAL_SCANNED + SCANNED))
 done
 
-# Extract summary
-echo "[+] Generating summary..."
-INFECTED=$(grep "Infected files:" "$REPORT_FILE" | awk '{sum += $3} END {print sum}')
-SCANNED=$(grep "Scanned files:" "$REPORT_FILE" | awk '{sum += $3} END {print sum}')
-echo "Scan completed at $(date)" > "$SUMMARY_FILE"
-echo "Total scanned files: $SCANNED" >> "$SUMMARY_FILE"
-echo "Total infected files: $INFECTED" >> "$SUMMARY_FILE"
-echo "Full report: $REPORT_FILE" >> "$SUMMARY_FILE"
+# ─── SUMMARY ────────────────────────────────────────────────────────────
+echo "[+] Final Summary:" | tee -a "$SUMMARY_FILE"
+echo "Total scanned files: $TOTAL_SCANNED" | tee -a "$SUMMARY_FILE"
+echo "Total infected files: $TOTAL_INFECTED" | tee -a "$SUMMARY_FILE"
+echo "Full report: $REPORT_FILE" | tee -a "$SUMMARY_FILE"
 
-# Display summary
-echo "[+] Summary:"
-cat "$SUMMARY_FILE"
+# ─── OPTIONAL NOTIFY ────────────────────────────────────────────────────
+# mail -s "ClamAV Scan Report from $HOSTNAME" you@example.com < "$SUMMARY_FILE"
