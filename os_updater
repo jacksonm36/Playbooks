@@ -1,4 +1,3 @@
----
 - name: Update and upgrade system
   hosts: all
   become: yes
@@ -18,44 +17,44 @@
           RED='\033[0;31m'
           GREEN='\033[0;32m'
           NC='\033[0m'
-          log() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"; }
-          error() { echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" >&2; }
+          LOGFILE="/var/log/system_update.log"
+          log() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "$LOGFILE"; }
+          error() { echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a "$LOGFILE" >&2; }
           
           if [[ $EUID -ne 0 ]]; then
             error "This script requires root privileges"
             exit 1
           fi
           
+          log "===== Starting system update at $(date) ====="
+          
           if command -v apt-get >/dev/null 2>&1; then
             log "Updating APT system"
-            apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
-            DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -qq
-            apt-get autoremove -y -qq
-            apt-get autoclean -y -qq
+            apt-get update | tee -a "$LOGFILE"
+            DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -V | tee -a "$LOGFILE"
+            DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -V | tee -a "$LOGFILE"
+            apt-get autoremove -y | tee -a "$LOGFILE"
+            apt-get autoclean -y | tee -a "$LOGFILE"
           elif command -v dnf >/dev/null 2>&1; then
             log "Updating DNF system"
-            dnf update -y -q
+            dnf update -y | tee -a "$LOGFILE"
           elif command -v yum >/dev/null 2>&1; then
             log "Updating YUM system"
-            yum update -y -q
+            yum update -y | tee -a "$LOGFILE"
           elif command -v zypper >/dev/null 2>&1; then
             log "Updating Zypper system"
-            zypper refresh -q
-            zypper update -y -q
+            zypper refresh | tee -a "$LOGFILE"
+            zypper update -y | tee -a "$LOGFILE"
           elif command -v pacman >/dev/null 2>&1; then
             log "Updating Pacman system"
-            pacman -Syu --noconfirm --noprogressbar
+            pacman -Syu --noconfirm | tee -a "$LOGFILE"
           else
             error "Unsupported package manager"
             exit 1
           fi
           
           log "System update completed successfully!"
-          echo "=========================================="
-          echo "SUCCESS: System update completed"
-          echo "Timestamp: $(date)"
-          echo "=========================================="
+          log "===== Finished at $(date) ====="
         dest: /tmp/update_system.sh
         mode: '0755'
         owner: root
@@ -68,7 +67,23 @@
 
     - name: Show update result
       debug:
-        msg: "{{ update_result.stdout }}"
+        msg: "{{ update_result.stdout_lines }}"
+
+    - name: Install logrotate config for system update
+      copy:
+        dest: /etc/logrotate.d/system_update
+        content: |
+          /var/log/system_update.log {
+              weekly
+              rotate 4
+              compress
+              missingok
+              notifempty
+              create 0640 root root
+          }
+        owner: root
+        group: root
+        mode: '0644'
 
     - name: Clean up temporary script
       file:
