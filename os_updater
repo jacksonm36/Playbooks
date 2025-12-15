@@ -4,76 +4,62 @@
   gather_facts: yes
 
   tasks:
-    - name: Check if running on supported OS
-      fail:
-        msg: "Unsupported operating system {{ ansible_facts['os_family'] }}"
-      when: ansible_facts['os_family'] not in ["Debian", "RedHat", "Suse", "Archlinux"]
+    - name: Fail if OS family is unsupported
+      ansible.builtin.fail:
+        msg: "Unsupported operating system {{ ansible_facts.os_family }}"
+      when: ansible_facts.os_family not in ["Debian", "RedHat", "Suse", "Archlinux"]
 
-    - name: Create update script
-      copy:
+    - name: Update & upgrade (Debian/Ubuntu)
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: dist
+        autoclean: yes
+        autoremove: yes
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Ensure packages are latest (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: "*"
+        state: latest
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Update & upgrade (RHEL/CentOS/Fedora/Rocky/Alma)
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+      when:
+        - ansible_facts.os_family == "RedHat"
+        - "'dnf' in ansible_facts.packages or ansible_facts.distribution_major_version is version('8', '>=')"
+
+    - name: Update & upgrade (legacy RHEL/CentOS with yum)
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+        update_cache: yes
+      when:
+        - ansible_facts.os_family == "RedHat"
+        - "'dnf' not in ansible_facts.packages and ansible_facts.distribution_major_version is version('8', '<')"
+
+    - name: Update & upgrade (SUSE/OpenSUSE)
+      community.general.zypper:
+        name: "*"
+        state: latest
+        update_cache: yes
+      when: ansible_facts.os_family == "Suse"
+
+    - name: Update & upgrade (Arch/Manjaro)
+      community.general.pacman:
+        update_cache: yes
+        upgrade: yes
+      when: ansible_facts.os_family == "Archlinux"
+
+    # Optional: log rotation for package manager logs (adjust paths per OS)
+    - name: Install logrotate config for updates (Debian/Ubuntu example)
+      ansible.builtin.copy:
+        dest: /etc/logrotate.d/system_updates
         content: |
-          #!/bin/bash
-          set -e
-          RED='\033[0;31m'
-          GREEN='\033[0;32m'
-          NC='\033[0m'
-          LOGFILE="/var/log/system_update.log"
-          log() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "$LOGFILE"; }
-          error() { echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a "$LOGFILE" >&2; }
-          
-          if [[ $EUID -ne 0 ]]; then
-            error "This script requires root privileges"
-            exit 1
-          fi
-          
-          log "===== Starting system update at $(date) ====="
-          
-          if command -v apt-get >/dev/null 2>&1; then
-            log "Updating APT system"
-            apt-get update | tee -a "$LOGFILE"
-            DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -V | tee -a "$LOGFILE"
-            DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -V | tee -a "$LOGFILE"
-            apt-get autoremove -y | tee -a "$LOGFILE"
-            apt-get autoclean -y | tee -a "$LOGFILE"
-          elif command -v dnf >/dev/null 2>&1; then
-            log "Updating DNF system"
-            dnf update -y | tee -a "$LOGFILE"
-          elif command -v yum >/dev/null 2>&1; then
-            log "Updating YUM system"
-            yum update -y | tee -a "$LOGFILE"
-          elif command -v zypper >/dev/null 2>&1; then
-            log "Updating Zypper system"
-            zypper refresh | tee -a "$LOGFILE"
-            zypper update -y | tee -a "$LOGFILE"
-          elif command -v pacman >/dev/null 2>&1; then
-            log "Updating Pacman system"
-            pacman -Syu --noconfirm | tee -a "$LOGFILE"
-          else
-            error "Unsupported package manager"
-            exit 1
-          fi
-          
-          log "System update completed successfully!"
-          log "===== Finished at $(date) ====="
-        dest: /tmp/update_system.sh
-        mode: '0755'
-        owner: root
-        group: root
-
-    - name: Execute system update
-      command: /tmp/update_system.sh
-      register: update_result
-      changed_when: update_result.rc == 0
-
-    - name: Show update result
-      debug:
-        msg: "{{ update_result.stdout_lines }}"
-
-    - name: Install logrotate config for system update
-      copy:
-        dest: /etc/logrotate.d/system_update
-        content: |
-          /var/log/system_update.log {
+          /var/log/apt/history.log /var/log/apt/term.log {
               weekly
               rotate 4
               compress
@@ -83,10 +69,5 @@
           }
         owner: root
         group: root
-        mode: '0644'
-
-    - name: Clean up temporary script
-      file:
-        path: /tmp/update_system.sh
-        state: absent
-      when: update_result.rc == 0
+        mode: "0644"
+      when: ansible_facts.os_family == "Debian"
