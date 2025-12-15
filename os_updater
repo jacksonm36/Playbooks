@@ -3,6 +3,10 @@
   become: yes
   gather_facts: yes
 
+  vars:
+    pkg_mgr: "{{ ansible_facts.pkg_mgr | default('') }}"
+    distro_major: "{{ ansible_facts.distribution_major_version | default('0') | int }}"
+
   tasks:
     - name: Fail if OS family is unsupported
       ansible.builtin.fail:
@@ -23,23 +27,23 @@
         state: latest
       when: ansible_facts.os_family == "Debian"
 
-    - name: Update & upgrade (RHEL/CentOS/Fedora/Rocky/Alma)
+    - name: Update & upgrade (RHEL/CentOS/Fedora/Rocky/Alma via dnf)
       ansible.builtin.dnf:
         name: "*"
         state: latest
         update_cache: yes
       when:
         - ansible_facts.os_family == "RedHat"
-        - "'dnf' in ansible_facts.packages or ansible_facts.distribution_major_version is version('8', '>=')"
+        - pkg_mgr == "dnf" or distro_major >= 8
 
-    - name: Update & upgrade (legacy RHEL/CentOS with yum)
+    - name: Update & upgrade (legacy RHEL/CentOS via yum)
       ansible.builtin.yum:
         name: "*"
         state: latest
         update_cache: yes
       when:
         - ansible_facts.os_family == "RedHat"
-        - "'dnf' not in ansible_facts.packages and ansible_facts.distribution_major_version is version('8', '<')"
+        - pkg_mgr == "yum" or distro_major < 8
 
     - name: Update & upgrade (SUSE/OpenSUSE)
       community.general.zypper:
@@ -54,7 +58,7 @@
         upgrade: yes
       when: ansible_facts.os_family == "Archlinux"
 
-    # Optional: log rotation for package manager logs (adjust paths per OS)
+    # Optional: log rotation for updates (Debian example; adjust per OS)
     - name: Install logrotate config for updates (Debian/Ubuntu example)
       ansible.builtin.copy:
         dest: /etc/logrotate.d/system_updates
