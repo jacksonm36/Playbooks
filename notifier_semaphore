@@ -1,0 +1,55 @@
+- name: Check recent Semaphore tasks and notify ntfy on failures
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    semaphore_url: "http://192.168.1.221:3000"
+    project_id: 2
+    api_token: "{{ lookup('env', 'SEMAPHORE_API_TOKEN') }}"
+    per_page: 20
+
+    ntfy_topic: "{{ lookup('env', 'NTFY_TOPIC') }}"
+    ntfy_user: "{{ lookup('env', 'NTFY_USER') }}"
+    ntfy_pass: "{{ lookup('env', 'NTFY_PASS') }}"
+    ntfy_url: "{{ lookup('env', 'NTFY_URL') | default('https://notifications.gamedns.hu', true) }}"
+
+  tasks:
+    - name: Get recent tasks from Semaphore
+      ansible.builtin.uri:
+        url: "{{ semaphore_url }}/api/projects/{{ project_id }}/tasks?per_page={{ per_page }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+        return_content: true
+        status_code: 200
+      register: semaphore_tasks
+
+    - name: Collect failed tasks
+      ansible.builtin.set_fact:
+        failed_tasks: "{{ semaphore_tasks.json | selectattr('status', 'equalto', 'error') | list }}"
+
+    - name: Show counts
+      ansible.builtin.debug:
+        msg:
+          total_tasks_checked: "{{ semaphore_tasks.json | length }}"
+          failed_tasks_count: "{{ failed_tasks | length }}"
+
+    - name: Notify ntfy if there are failures
+      ansible.builtin.uri:
+        url: "{{ ntfy_url }}/{{ ntfy_topic }}"
+        method: POST
+        user: "{{ ntfy_user }}"
+        password: "{{ ntfy_pass }}"
+        force_basic_auth: yes
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          title: "Semaphore failures: {{ failed_tasks | length }}"
+          message: |
+            Recent failed tasks:
+            {% for t in failed_tasks %}
+            - {{ t.name | default('task') }} (ID {{ t.id | default('n/a') }}) status={{ t.status }}
+            {% endfor %}
+          tags: ["semaphore", "failed"]
+      when: failed_tasks | length > 0
