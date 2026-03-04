@@ -1,4 +1,4 @@
 # Ansible inventory for 192.168.1.0/24 (based on 192.168.1.254/24)
 # NOTE: .0 is network address and .255 is broadcast, so hosts are .1-.254.
 [kestra]
-kestra ansible_host=192.168.1.177
+kestra ansible_host=192.168.1.209
